@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CRM Analytics Dashboard</title>
+  <meta charset="UTF-8">
+  <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <!-- Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=GA_MEASUREMENT_ID"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'GA_MEASUREMENT_ID');
+  </script>
+
+  <style>
+    body { font-family: Arial; margin: 20px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+    th, td { border: 1px solid #ddd; padding: 8px; text-align: center; }
+    th { background-color: #f2f2f2; }
+    input, button { margin-top: 10px; margin-right: 10px; padding: 5px 10px; }
+    h2, h3 { margin-bottom: 10px; }
+    footer { text-align: center; margin-top: 30px; font-size: 14px; color: #555; }
+    canvas { max-width: 600px; margin-top: 20px; }
+  </style>
+</head>
+<body>
+  <h2>CRM Analytics Dashboard</h2>
+
+  <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" />
+  <button onclick="clearData()">Clear All Data</button>
+
+  <div id="result"></div>
+
+  <canvas id="retentionChart"></canvas>
+  <canvas id="frequencyChart"></canvas>
+  <canvas id="rfmChart"></canvas>
+
+  <footer>
+    Developed by <b>Your Name</b> | 
+    <a href="https://yourwebsite.com" target="_blank">yourwebsite.com</a>
+  </footer>
+
+  <script>
+    let customerData = [];
+
+    document.getElementById("fileInput").addEventListener("change", handleFile, false);
+
+    function handleFile(e){
+      const file = e.target.files[0];
+      if(!file) return alert("Please select a valid Excel/CSV file");
+
+      const reader = new FileReader();
+      reader.onload = function(event){
+        if(file.name.endsWith(".csv")){
+          parseCSV(event.target.result);
+        } else {
+          const data = new Uint8Array(event.target.result);
+          const workbook = XLSX.read(data, {type:'array'});
+          const sheet = workbook.Sheets[workbook.SheetNames[0]];
+          customerData = XLSX.utils.sheet_to_json(sheet);
+          analyzeData();
+        }
+      };
+      if(file.name.endsWith(".csv")) reader.readAsText(file);
+      else reader.readAsArrayBuffer(file);
+    }
+
+    function parseCSV(data){
+      const rows = data.split("\n").map(r=>r.trim()).filter(r=>r);
+      const headers = rows[0].split(",");
+      customerData = rows.slice(1).map(row=>{
+        const values = row.split(",");
+        let obj = {};
+        headers.forEach((h,i)=> obj[h.trim()] = values[i].trim());
+        return obj;
+      });
+      analyzeData();
+    }
+
+    function analyzeData(){
+      if(customerData.length===0) return alert("No data found");
+
+      const retentionMap = {};
+      let totalAmount = 0;
+
+      customerData.forEach(c=>{
+        const id = c.CustomerID;
+        if(!retentionMap[id]) retentionMap[id] = {dates:[], amount:0};
+        retentionMap[id].dates.push(new Date(c.PurchaseDate));
+        retentionMap[id].amount += parseFloat(c.Amount || 0);
+        totalAmount += parseFloat(c.Amount || 0);
+      });
+
+      let totalCustomers = Object.keys(retentionMap).length;
+      let retainedCustomers = 0;
+      let totalPurchases = 0;
+      let recencyList = [];
+      let rfmData = [];
+
+      for(const id in retentionMap){
+        const purchases = retentionMap[id].dates.length;
+        totalPurchases += purchases;
+        if(purchases > 1) retainedCustomers++;
+        const lastPurchase = retentionMap[id].dates.sort((a,b)=>b-a)[0];
+        const today = new Date();
+        const recency = Math.floor((today - lastPurchase)/(1000*60*60*24));
+        recencyList.push(recency);
+
+        rfmData.push({
+          id,
+          recency,
+          frequency: purchases,
+          monetary: retentionMap[id].amount
+        });
+      }
+
+      const retentionRate = ((retainedCustomers/totalCustomers)*100).toFixed(2);
+      const avgFrequency = (totalPurchases/totalCustomers).toFixed(2);
+      const avgRecency = (recencyList.reduce((a,b)=>a+b,0)/totalCustomers).toFixed(2);
+      const avgSpend = (totalAmount/totalCustomers).toFixed(2);
+
+      displayResults(retentionRate, avgFrequency, avgRecency, avgSpend, retentionMap, rfmData);
+    }
+
+    function displayResults(retentionRate, avgFreq, avgRecency, avgSpend, retentionMap, rfmData){
+      let html = `<h3>Analytics Summary</h3>
+                  <p><b>Customer Retention Rate:</b> ${retentionRate}%</p>
+                  <p><b>Average Purchase Frequency:</b> ${avgFreq}</p>
+                  <p><b>Average Recency (days since last purchase):</b> ${avgRecency}</p>
+                  <p><b>Average Spend per Customer:</b> ${avgSpend}</p>`;
+
+      html += `<h3>Customer Details</h3>
+               <table><tr><th>Customer ID</th><th>No. of Purchases</th><th>Total Spend</th><th>Last Purchase Date</th></tr>`;
+
+      for(const id in retentionMap){
+        const purchases = retentionMap[id].dates.length;
+        const totalAmount = retentionMap[id].amount.toFixed(2);
+        const lastDate = retentionMap[id].dates.sort((a,b)=>b-a)[0].toISOString().split('T')[0];
+        html += `<tr><td>${id}</td><td>${purchases}</td><td>${totalAmount}</td><td>${lastDate}</td></tr>`;
+      }
+      html += `</table>`;
+      document.getElementById("result").innerHTML = html;
+
+      drawCharts(retentionRate, avgFreq, rfmData);
+    }
+
+    function drawCharts(retentionRate, avgFreq, rfmData){
+      // Retention Chart
+      new Chart(document.getElementById('retentionChart'), {
+        type: 'doughnut',
+        data: {
+          labels: ['Retained', 'Single Purchase'],
+          datasets: [{
+            data: [retentionRate, (100 - retentionRate)],
+            backgroundColor: ['#4CAF50','#F44336']
+          }]
+        },
+        options: { responsive:true, plugins:{title:{display:true,text:'Customer Retention %'}} }
+      });
+
+      // Frequency Chart
+      const freqCounts = {};
+      rfmData.forEach(c=>{
+        const f = c.frequency;
+        freqCounts[f] = (freqCounts[f] || 0)+1;
+      });
+      new Chart(document.getElementById('frequencyChart'), {
+        type:'bar',
+        data:{
+          labels:Object.keys(freqCounts),
+          datasets:[{
+            label:'Number of Customers',
+            data:Object.values(freqCounts),
+            backgroundColor:'#2196F3'
+          }]
+        },
+        options:{ responsive:true, plugins:{title:{display:true,text:'Purchase Frequency Distribution'}} }
+      });
+
+      // RFM Segmentation Chart
+      const segments = {Loyal:0, Potential:0, 'At Risk':0, Lost:0};
+      rfmData.forEach(c=>{
+        if(c.recency<=30 && c.frequency>1) segments.Loyal++;
+        else if(c.recency<=30 && c.frequency===1) segments.Potential++;
+        else if(c.recency>30 && c.frequency>1) segments['At Risk']++;
+        else segments.Lost++;
+      });
+      new Chart(document.getElementById('rfmChart'),{
+        type:'pie',
+        data:{
+          labels:Object.keys(segments),
+          datasets:[{
+            data:Object.values(segments),
+            backgroundColor:['#4CAF50','#FFC107','#FF9800','#F44336']
+          }]
+        },
+        options:{ responsive:true, plugins:{title:{display:true,text:'RFM Customer Segmentation'}} }
+      });
+    }
+
+    function clearData(){
+      customerData=[];
+      document.getElementById("fileInput").value="";
+      document.getElementById("result").innerHTML="";
+      document.getElementById('retentionChart').getContext('2d').clearRect(0,0,600,400);
+      document.getElementById('frequencyChart').getContext('2d').clearRect(0,0,600,400);
+      document.getElementById('rfmChart').getContext('2d').clearRect(0,0,600,400);
+    }
+  </script>
+</body>
+</html>
